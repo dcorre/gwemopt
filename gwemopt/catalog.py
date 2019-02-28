@@ -67,13 +67,18 @@ def get_catalog(params, map_struct):
             cat, = Vizier.get_catalogs('VII/281/glade2')
 
             ra, dec = cat["RAJ2000"], cat["DEJ2000"]
-            distmpc = cat["Dist"]
+            distmpc, z = cat["Dist"], cat["z"]
             magb, magk = cat["Bmag"], cat["Kmag"]
+            # Keep track of galaxy identifier
+            GWGC, PGC, HyperLEDA = cat["GWGC"], cat["PGC"], cat["HyperLEDA"]
+            _2MASS, SDSS = cat["_2MASS"], cat["SDSS-DR12"]
 
             idx = np.where(distmpc >= 0)[0]
             ra, dec = ra[idx], dec[idx]
-            distmpc = distmpc[idx]
+            distmpc, z = distmpc[idx], z[idx]
             magb, magk = magb[idx], magk[idx]
+            GWGC, PGC, HyperLEDA = GWGC[idx], PGC[idx], HyperLEDA[idx]
+            _2MASS, SDSS = _2MASS[idx], SDSS[idx]
 
             with h5py.File(catalogFile, 'w') as f:
                 f.create_dataset('ra', data=ra)
@@ -81,14 +86,31 @@ def get_catalog(params, map_struct):
                 f.create_dataset('distmpc', data=distmpc)
                 f.create_dataset('magb', data=magb)
                 f.create_dataset('magk', data=magk)
+                f.create_dataset('z', data=z)
+                # Add galaxy identifier
+                f.create_dataset('GWGC', data=GWGC)
+                f.create_dataset('PGC', data=PGC)
+                f.create_dataset('HyperLEDA', data=HyperLEDA)
+                f.create_dataset('2MASS', data=_2MASS)
+                f.create_dataset('SDSS', data=SDSS)
+
         else:
             with h5py.File(catalogFile, 'r') as f:
                 ra, dec = f['ra'][:], f['dec'][:]
-                distmpc = f['distmpc'][:]
+                distmpc, z = f['distmpc'][:], f['z'][:]
                 magb, magk = f['magb'][:], f['magk'][:]
+                GWGC, PGC, HyperLEDA = f['GWGC'][:], f['PGC'][:], f['HyperLEDA'][:]
+                _2MASS, SDSS = f['2MASS'][:], f['SDSS'][:]
+                # Convert bytestring to unicode
+                GWGC = GWGC.astype('U')
+                PGC = PGC.astype('U')
+                HyperLEDA = HyperLEDA.astype('U')
+                _2MASS = _2MASS.astype('U')
+                SDSS = SDSS.astype('U')
 
-        idx = np.where(~np.isnan(magb))[0]
-        ra, dec, distmpc, magb, magk = ra[idx], dec[idx], distmpc[idx], magb[idx], magk[idx]
+        if params["galaxy_grade"] != "3D":
+            idx = np.where(~np.isnan(magb))[0]
+            ra, dec, distmpc, magb, magk = ra[idx], dec[idx], distmpc[idx], magb[idx], magk[idx]
 
         r = distmpc * 1.0
         mag = magb * 1.0
@@ -139,42 +161,84 @@ def get_catalog(params, map_struct):
     theta = 0.5 * np.pi - dec * 2 * np.pi /360.0
     phi = ra * 2 * np.pi /360.0
     ipix = hp.ang2pix(map_struct["nside"], ra, dec, lonlat=True)
-
+    
     if "distnorm" in map_struct:
+        """
+        r_test = np.linspace(0,5000,5000)
+        print ("Sum Prob 2D: %e   %e" % (np.sum(map_struct["prob"][ipix]),np.sum(map_struct["prob"])) )
+        for i in range(len(ipix)):
+            print ("Prob 2D: %e  Norm: %e   Prob dist: %e   Sum PDF dist: %e" % (map_struct["prob"][ipix][i], map_struct["distnorm"][ipix][i], map_struct["distnorm"][ipix][i] * norm(map_struct["distmu"][ipix][i], map_struct["distsigma"][ipix][i]).pdf(r[i]), np.sum(map_struct["distnorm"][ipix][i] * norm(map_struct["distmu"][ipix][i], map_struct["distsigma"][ipix][i]).pdf(r_test))))
+        """
         Sloc = map_struct["prob"][ipix] * (map_struct["distnorm"][ipix] * norm(map_struct["distmu"][ipix], map_struct["distsigma"][ipix]).pdf(r))**params["powerlaw_dist_exp"] / map_struct["pixarea"]
+        #Sloc = copy.copy(map_struct["prob"][ipix])
+        #print (len(Sloc), len(Sloc[np.isnan(Sloc)]))
+        Sloc[np.isnan(Sloc)] = 0
     else:
         Sloc = copy.copy(map_struct["prob"][ipix])
-
+    
     S = Sloc*Slum*Sdet
     prob = np.zeros(map_struct["prob"].shape)
-    prob[ipix] = prob[ipix] + S
+    if params["galaxy_grade"] == "loc":
+        prob[ipix] = prob[ipix] + Sloc
+    else:
+        prob[ipix] = prob[ipix] + S
     prob = prob / np.sum(prob)
 
     map_struct['prob_catalog'] = prob
     if params["doUseCatalog"]:
         map_struct['prob'] = prob 
 
-    idx = np.where(~np.isnan(S))[0]
-    ra, dec, Sloc, S = ra[idx], dec[idx], Sloc[idx], S[idx]
+    if params["galaxy_grade"] == "loc":
+        idx = np.where(~np.isnan(Sloc))[0]
+        ra, dec, Sloc, distmpc, z = ra[idx], dec[idx], Sloc[idx], distmpc[idx], z[idx]
+        GWGC, PGC, HyperLEDA = GWGC[idx], PGC[idx], HyperLEDA[idx]
+        _2MASS, SDSS = _2MASS[idx], SDSS[idx]
 
-    Sthresh = np.max(S)*0.01
-    idx = np.where(S >= Sthresh)[0]
-    ra, dec, Sloc, S = ra[idx], dec[idx], Sloc[idx], S[idx] 
+        Sthresh = np.max(Sloc)*0.01
+        idx = np.where(Sloc >= Sthresh)[0]
+        ra, dec, Sloc, distmpc, z = ra[idx], dec[idx], Sloc[idx], distmpc[idx], z[idx]
+        GWGC, PGC, HyperLEDA = GWGC[idx], PGC[idx], HyperLEDA[idx]
+        _2MASS, SDSS = _2MASS[idx], SDSS[idx]
 
-    idx = np.argsort(S)[::-1]
-    ra, dec, Sloc, S = ra[idx], dec[idx], Sloc[idx], S[idx] 
+        idx = np.argsort(Sloc)[::-1]
+        ra, dec, Sloc, distmpc, z = ra[idx], dec[idx], Sloc[idx], distmpc[idx], z[idx]
+        GWGC, PGC, HyperLEDA = GWGC[idx], PGC[idx], HyperLEDA[idx]
+        _2MASS, SDSS = _2MASS[idx], SDSS[idx]
 
-    if len(ra) > 1000:
-        print('Cutting catalog to top 1000 galaxies...')
-        idx = np.arange(1000).astype(int)
+    else:
+        
+        idx = np.where(~np.isnan(S))[0]
         ra, dec, Sloc, S = ra[idx], dec[idx], Sloc[idx], S[idx]
+
+        Sthresh = np.max(S)*0.01
+        idx = np.where(S >= Sthresh)[0]
+        ra, dec, Sloc, S = ra[idx], dec[idx], Sloc[idx], S[idx] 
+
+        idx = np.argsort(S)[::-1]
+        ra, dec, Sloc, S = ra[idx], dec[idx], Sloc[idx], S[idx] 
+        
+    if len(ra) > 50:
+        print('Cutting catalog to top 50 galaxies...')
+        idx = np.arange(50).astype(int)
+        if params["galaxy_grade"] == "3D":
+            ra, dec, Sloc, distmpc, z = ra[idx], dec[idx], Sloc[idx], distmpc[idx], z[idx]
+            GWGC, PGC, HyperLEDA = GWGC[idx], PGC[idx], HyperLEDA[idx]
+            _2MASS, SDSS = _2MASS[idx], SDSS[idx]
+        else:
+            ra, dec, Sloc, S = ra[idx], dec[idx], Sloc[idx], S[idx]
 
     catalogfile = os.path.join(params["outputDir"],'catalog.csv')
     fid = open(catalogfile,'w')
-    cnt = 0
-    for a, b, c, d in zip(ra, dec, Sloc, S):
-        fid.write("%d %.5f %.5f %.5e %.5e\n"%(cnt,a,b,c,d))
-        cnt = cnt + 1
+    cnt = 1
+    if params["galaxy_grade"] == "loc":  
+        for a, b, c, d, e, f, g, h, i, j in zip(ra, dec, Sloc, distmpc, z, GWGC, PGC, HyperLEDA, _2MASS, SDSS):
+            fid.write("%d, %.5f, %.5f, %.5e, %.2f, %.4f, %s, %s, %s, %s, %s\n"%(cnt,a,b,c,d,e,f,g,h,i,j))
+            cnt = cnt + 1
+    else:
+        for a, b, c, d in zip(ra, dec, Sloc, S):
+            fid.write("%d %.5f %.5f %.5e %.5e\n"%(cnt,b,c,d))
+            cnt = cnt + 1
+
     fid.close()
 
     return map_struct
